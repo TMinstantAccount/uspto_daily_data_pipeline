@@ -6,15 +6,17 @@
 
 ## 🎯 What This Does
 
-Every day at **12:30 AM EST** (as soon as USPTO publishes the daily feed around midnight EST), this pipeline automatically:
+Every day at **4:00 AM CST** (10:00 UTC), this pipeline automatically:
 
-1. 📥 Downloads the latest USPTO trademark XML feed
-2. 🔍 Filters for status codes 
-3. 📋 Extracts trademark details and generates TSDR URLs
+1. ⏳ Waits for USPTO daily data to become available (sensor)
+2. 📥 Downloads the latest USPTO trademark XML feed
+3. 🔍 Parses XML, filters by status codes, and generates TSDR URLs
 4. 🌐 Scrapes attorney & correspondent emails from USPTO websites
-5. 📊 Merges everything into a final CSV with prosecution history
-6. ☁️ Stores results in Google Cloud Storage
-7. 📧 Emails you a summary report
+5. 📊 Merges parsed and scraped data into a single CSV
+6. 📧 Normalizes emails (one row per case, comma-separated email lists)
+7. 🗄️ Ingests data into Azure SQL Database (`dbo.uspto_trademark_emails`)
+8. 📋 Writes a daily summary row to `dbo.uspto_pipeline_daily_summary` (Central Time)
+9. 📬 Sends email on failure (Airflow email alerts)
 
 ---
 
@@ -27,7 +29,7 @@ Every day at **12:30 AM EST** (as soon as USPTO publishes the daily feed around 
 **Total: ~$32/month** (vs $300+ for full Cloud Composer)  
 **Annual Savings: ~$3,000!** 💰
 
-See [HYBRID_ARCHITECTURE.md](HYBRID_ARCHITECTURE.md) for details.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
 
 ---
 
@@ -41,16 +43,15 @@ Daily CSV file with all trademark data:
 serial_number,filing_date,status_code,status_description,attorney_name,attorney_email,correspondent_name,correspondent_email,all_emails,prosecution_date,prosecution_description,url,...
 ```
 
-### Output Location
+### Output Locations
 
-```
-gs://daily-file-staging/daily_final_result/YYYY/MM/DD/final_trademarks_YYYYMMDD.csv
-```
+- **GCS (CSV):** `gs://daily-file-staging/daily_final_result/YYYY/MM/DD/final_trademarks_YYYYMMDD.csv`
+- **Azure SQL:** `dbo.uspto_trademark_emails` (one row per email per case), `dbo.uspto_pipeline_daily_summary` (one row per run, timestamps in Central Time)
 
-Access via:
+Access GCS via:
 - [Google Cloud Console](https://console.cloud.google.com/storage/browser/daily-file-staging)
 - gsutil: `gsutil cp gs://daily-file-staging/daily_final_result/...`
-- Python: Using `google-cloud-storage` library
+- Python: `google-cloud-storage` library
 
 ---
 
@@ -77,23 +78,16 @@ docker-compose up -d
 
 📖 **Full Guide:** [LOCAL_TESTING_GUIDE.md](LOCAL_TESTING_GUIDE.md)
 
-### Option 2: Deploy to Production Server
+### Option 2: Deploy to Self-Hosted Server
+
+1. Set up GCP credentials and Azure SQL (see [GCP_CREDENTIALS_SETUP.md](GCP_CREDENTIALS_SETUP.md), [DATABASE_SETUP.md](DATABASE_SETUP.md)).
+2. Share and place `.env` and `gcs-key.json` on the server (see [Sharing .env and GCS key with teammates](#-sharing-env-and-gcs-key-with-teammates)).
+3. Configure Airflow Variables for Azure SQL (Admin → Variables).
+4. Deploy and start: see [SELF_HOSTED_DEPLOYMENT.md](SELF_HOSTED_DEPLOYMENT.md).
 
 ```bash
-# 1. Set up GCP credentials
-#    See: GCP_CREDENTIALS_SETUP.md
-
-# 2. Deploy to your server
-#    See: SELF_HOSTED_DEPLOYMENT.md
-
-# 3. Configure USPTO API key
-export USPTO_API_KEY="your-api-key-here"
-
-# 4. Start the pipeline
 docker-compose up -d
 ```
-
-📖 **Full Guide:** [SELF_HOSTED_DEPLOYMENT.md](SELF_HOSTED_DEPLOYMENT.md)
 
 ---
 
@@ -108,8 +102,9 @@ docker-compose up -d
 
 ### Optional
 
-- USPTO API key (placeholder provided for testing)
-- SMTP credentials for email notifications
+- USPTO API key (for API-based download; placeholder may work for testing)
+- SMTP credentials (e.g. Gmail App Password) for Airflow failure emails
+- Azure SQL connection (Airflow Variables) for database ingest
 
 ---
 
@@ -118,22 +113,38 @@ docker-compose up -d
 ```
 uspto_airflow_pipeline/
 ├── config/
-│   └── config.py                 # Central configuration
+│   ├── __init__.py
+│   └── config.py                 # Central configuration (GCS, USPTO, scrape settings)
 ├── dags/
-│   └── uspto_daily_pipeline.py   # Main Airflow DAG
+│   └── uspto_daily_pipeline.py   # Main Airflow DAG (schedule: 4:00 AM CST)
+├── plugins/
+│   └── .gitkeep                  # Custom Airflow plugins (optional)
 ├── scripts/
-│   ├── download_xml.py           # Download USPTO XML
-│   ├── parse_xml.py              # Parse and filter XML
-│   ├── scrape_emails.py          # Scrape email addresses
-│   └── merge_data.py             # Merge and finalize data
-├── docker-compose.yml            # Docker configuration
+│   ├── __init__.py
+│   ├── download_xml.py           # Download USPTO XML to GCS
+│   ├── parse_xml.py              # Parse XML, filter by status, output CSV
+│   ├── scrape_emails.py          # Scrape attorney/correspondent emails from TSDR
+│   ├── merge_data.py             # Merge parsed + scraped CSVs
+│   ├── normalize_emails.py       # One row per case, comma-separated emails
+│   ├── ingest_to_database.py    # Ingest to Azure SQL + pipeline summary
+│   ├── azure_sql_connection.py    # Azure SQL connection helper
+│   └── sql/
+│       ├── 01_drop_uspto_trademark_emails.sql
+│       └── 02_create_uspto_trademark_emails.sql
+├── docker-compose.yml            # Airflow + Postgres (LocalExecutor)
 ├── requirements.txt              # Python dependencies
+├── .env.example                  # Template for .env (copy to .env, do not commit .env)
+├── start_local_airflow.ps1       # Start Airflow (PowerShell)
+├── stop_local_airflow.ps1        # Stop Airflow (PowerShell)
 ├── README.md                     # This file
-├── HYBRID_ARCHITECTURE.md        # Architecture overview
-├── GCP_CREDENTIALS_SETUP.md      # GCP setup guide
-├── SELF_HOSTED_DEPLOYMENT.md     # Deployment guide
+├── ARCHITECTURE.md               # Architecture overview
+├── DATABASE_SETUP.md             # Azure SQL schema and setup
+├── GCP_CREDENTIALS_SETUP.md      # GCP service account and bucket
+├── SELF_HOSTED_DEPLOYMENT.md     # Server deployment guide
 └── LOCAL_TESTING_GUIDE.md        # Local testing guide
 ```
+
+**Not in Git (add locally / share securely):** `.env`, `gcs-key.json` — see [Sharing .env and GCS key with teammates](#-sharing-env-and-gcs-key-with-teammates).
 
 ---
 
@@ -141,16 +152,11 @@ uspto_airflow_pipeline/
 
 ### Environment Variables
 
-Set these in `docker-compose.yml` or `.env`:
-
-```bash
-# Required
-GOOGLE_APPLICATION_CREDENTIALS=/opt/airflow/gcs-key.json
-
-# Optional
-USPTO_API_KEY=your-api-key-here
-NOTIFICATION_EMAIL=your-email@example.com
-```
+- **For Docker/Airflow:** Copy `.env.example` to `.env` in the project root and set at least:
+  - `AIRFLOW_UID` (e.g. `50000`)
+  - `AIRFLOW_SMTP_PASSWORD` (Gmail App Password or SMTP password for failure emails)
+  - `USPTO_API_KEY` (if required by the download step)
+- **Inside the container,** `docker-compose` sets `GOOGLE_APPLICATION_CREDENTIALS=/opt/airflow/gcs-key.json`; the host file `gcs-key.json` must exist in the project root (see [Sharing .env and GCS key with teammates](#-sharing-env-and-gcs-key-with-teammates)).
 
 ### Filtering Criteria
 
@@ -160,12 +166,51 @@ Edit `config/config.py`:
 
 ### Schedule
 
-Edit `dags/uspto_daily_pipeline.py`:
+The DAG runs daily at **4:00 AM CST** (10:00 UTC). Defined in `dags/uspto_daily_pipeline.py`:
 
 ```python
-# Current: 12:30 AM EST daily (05:30 UTC)
-schedule_interval='30 5 * * *'
+schedule_interval='0 10 * * *'  # 4:00 AM CST = 10:00 UTC
 ```
+
+---
+
+## 🔐 Sharing .env and GCS key with teammates
+
+`.env` and `gcs-key.json` are in `.gitignore` and must **never** be committed. To run the pipeline on a self-hosted server, teammates need these files in the project root. Share them securely:
+
+### 1. Use a secure channel (recommended)
+
+- **Password manager / secrets vault:** 1Password, Bitwarden, Azure Key Vault, etc. Store the file contents or attach the files; teammates download and save as `.env` and `gcs-key.json` in the repo root.
+- **Encrypted archive:** Create a password-protected zip (e.g. 7-Zip, WinRAR) with `.env` and `gcs-key.json`, share the zip and the password over a different channel (e.g. password in chat, zip via email or shared drive).
+- **Secure file share:** Use a link with expiry and access control (e.g. OneDrive/SharePoint “share link” with limited people, or your company’s secure file share). Tell teammates to save the files in the pipeline project root.
+
+### 2. What to put in `.env`
+
+Copy `.env.example` to `.env` and fill in real values (see below). Typical variables:
+
+- `AIRFLOW_UID` – for Docker (e.g. `50000`).
+- `AIRFLOW_SMTP_PASSWORD` – Gmail App Password (or SMTP password) for Airflow failure emails.
+- `USPTO_API_KEY` – USPTO API key if your download step uses it.
+
+Teammates on the server: create `.env` in the same directory as `docker-compose.yml` and ensure no one commits it.
+
+### 3. What to share for GCS
+
+- **`gcs-key.json`** – JSON key for the GCP service account that has access to your GCS bucket. Teammates place it in the project root. `docker-compose.yml` mounts it into the Airflow container as `/opt/airflow/gcs-key.json` (and `GOOGLE_APPLICATION_CREDENTIALS` points there).
+
+Do **not** email or Slack the raw contents in plain text. Prefer a secrets vault or encrypted file + separate password.
+
+### 4. On the self-hosted server
+
+After cloning the repo:
+
+1. Copy `.env.example` to `.env` and fill in values (or get `.env` from a teammate via a secure channel).
+2. Place `gcs-key.json` in the project root (obtained securely).
+3. Ensure `docker-compose.yml` has the volume mount for the key (e.g. `./gcs-key.json:/opt/airflow/gcs-key.json:ro`).
+4. Set Airflow Variables for Azure SQL (Admin → Variables) if you use database ingest.
+5. Run `docker-compose up -d`.
+
+The pipeline will then have access to GCS and, if configured, to Azure SQL and SMTP.
 
 ---
 
@@ -259,41 +304,20 @@ blob.download_to_filename('local_file.csv')
 
 ---
 
-## 📊 Pipeline Steps
+## 📊 Pipeline Steps (DAG Tasks)
 
-### Step 1: Download XML (5-10 minutes)
+| # | Task ID | Description | Typical duration |
+|---|---------|-------------|------------------|
+| 0 | `wait_for_data` | Sensor: wait until USPTO daily XML is available | Until data appears |
+| 1 | `download_xml` | Download USPTO XML, upload to GCS | 5–10 min |
+| 2 | `parse_xml` | Parse XML, filter by status codes, output CSV to GCS | 5–10 min |
+| 3 | `scrape_emails` | Scrape attorney/correspondent emails from TSDR URLs | 30–60 min |
+| 4 | `merge_data` | Merge parsed + scraped CSVs, upload to GCS | 1–2 min |
+| 5 | `normalize_emails` | One row per case, comma-separated emails, upload to GCS | 1–2 min |
+| 6 | `ingest_to_database` | Ingest normalized CSV into Azure SQL `dbo.uspto_trademark_emails` | 2–5 min |
+| 7 | `write_pipeline_summary` | Write one row to `dbo.uspto_pipeline_daily_summary` (Central Time) | &lt; 1 min |
 
-- Queries USPTO API for latest daily feed
-- Downloads XML file (~100-500 MB)
-- Uploads to GCS: `gs://daily-file-staging/daily_xml_file/`
-
-### Step 2: Parse XML (5-10 minutes)
-
-- Parses XML file
-- Filters by status codes and filing date
-- Extracts trademark data
-- Generates TSDR URLs
-- Uploads CSV to GCS
-
-### Step 3: Scrape Emails (30-60 minutes)
-
-- Reads parsed CSV from GCS
-- Scrapes each TSDR URL for emails
-- Extracts prosecution history
-- Uploads CSV to GCS
-
-### Step 4: Merge Data (1-2 minutes)
-
-- Downloads parsed and scraped CSVs
-- Merges by serial number
-- Deduplicates emails
-- Uploads final CSV to GCS
-
-### Step 5: Send Notification (< 1 minute)
-
-- Sends email with summary and link
-
-**Total Runtime:** ~40-80 minutes per day
+**Total runtime:** ~45–90 minutes per day. Airflow sends email on task failure.
 
 ---
 
@@ -439,10 +463,11 @@ vim dags/uspto_daily_pipeline.py
 
 ## 📚 Documentation
 
-- **[HYBRID_ARCHITECTURE.md](HYBRID_ARCHITECTURE.md)** - Detailed architecture explanation
-- **[GCP_CREDENTIALS_SETUP.md](GCP_CREDENTIALS_SETUP.md)** - GCP authentication setup
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Architecture overview
+- **[DATABASE_SETUP.md](DATABASE_SETUP.md)** - Azure SQL schema and setup
+- **[GCP_CREDENTIALS_SETUP.md](GCP_CREDENTIALS_SETUP.md)** - GCP service account and bucket
 - **[SELF_HOSTED_DEPLOYMENT.md](SELF_HOSTED_DEPLOYMENT.md)** - Server deployment guide
-- **[LOCAL_TESTING_GUIDE.md](LOCAL_TESTING_GUIDE.md)** - Local development guide
+- **[LOCAL_TESTING_GUIDE.md](LOCAL_TESTING_GUIDE.md)** - Local testing guide
 
 ---
 
@@ -512,17 +537,18 @@ This project is for internal use. USPTO data is public domain.
 - [ ] Tested locally: `docker-compose up -d`
 - [ ] Accessed Airflow UI: http://localhost:8080
 - [ ] Manually triggered test run
-- [ ] Verified output in GCS
+- [ ] Verified output in GCS and/or Azure SQL
+- [ ] (Self-hosted) `.env` and `gcs-key.json` in place; Airflow Variables set for Azure SQL if used
 
 ---
 
 ## 🎉 You're All Set!
 
-Your pipeline will now run automatically every day at 7 PM, extracting the latest USPTO trademark applications and scraping contact information!
+The pipeline runs automatically every day at **4:00 AM CST**, extracting the latest USPTO trademark data, scraping contact information, and ingesting into Azure SQL.
 
 **Check your results:**
-```
-gs://daily-file-staging/daily_final_result/YYYY/MM/DD/final_trademarks_YYYYMMDD.csv
-```
+
+- GCS: `gs://daily-file-staging/daily_final_result/YYYY/MM/DD/final_trademarks_YYYYMMDD.csv`
+- Azure SQL: `dbo.uspto_trademark_emails`, `dbo.uspto_pipeline_daily_summary`
 
 **Questions?** Check the docs in this repo! 📚
