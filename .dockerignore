@@ -1,0 +1,20 @@
+# Don't copy these to Docker containers
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+.venv/
+.git/
+.gitignore
+*.md
+.env
+logs/
+test_data/
+*.csv
+*.xml
+.DS_Store
+Thumbs.db
+

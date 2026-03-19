@@ -1,0 +1,21 @@
+# Core dependencies for Self-Hosted Airflow
+apache-airflow==2.8.0
+
+# Google Cloud Storage (for data storage)
+google-cloud-storage==2.14.0
+
+# Data processing
+pandas==2.1.4
+numpy==1.24.3
+
+# Web scraping
+requests==2.31.0
+beautifulsoup4==4.12.2
+lxml==5.1.0
+
+# Database connectivity
+pyodbc==5.0.1
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2023.3

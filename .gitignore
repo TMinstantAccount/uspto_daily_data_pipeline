@@ -1,0 +1,43 @@
+# Airflow
+logs/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+airflow.db
+airflow-webserver.pid
+unittests.cfg
+
+# GCP Credentials - NEVER COMMIT THESE!
+gcs-key.json
+*-key.json
+*.json
+
+# Environment
+.env
+.venv
+venv/
+ENV/
+
+# Data files
+data/
+*.xml
+*.csv
+*.zip
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.docker/
+postgres-db-volume/
+
