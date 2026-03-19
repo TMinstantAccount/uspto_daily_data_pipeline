@@ -47,20 +47,17 @@ def download_from_gcs(gcs_path):
         raise
 
 
-def parse_xml_file(xml_path, max_rows=None):
+def parse_xml_file(xml_path):
     """
-    Parse XML file and extract trademark data
-    
+    Parse XML file and extract trademark data.
+
     Args:
         xml_path: Path to XML file
-        max_rows: Optional limit on number of rows to return (for testing)
     """
     logger.info("="*80)
     logger.info("USPTO Trademark XML Parser")
     logger.info("="*80)
     logger.info(f"Filtering for status codes: {', '.join(TARGET_STATUS_CODES)}")
-    if max_rows:
-        logger.info(f"Row limit: {max_rows}")
     logger.info(f"\nParsing XML file: {xml_path}")
 
     tree = ET.parse(xml_path)
@@ -74,10 +71,6 @@ def parse_xml_file(xml_path, max_rows=None):
     processed_count = 0
 
     for case in all_cases:
-        # Stop if we've reached the limit
-        if max_rows and filtered_count >= max_rows:
-            logger.info(f"Reached row limit ({max_rows}), stopping processing")
-            break
         processed_count += 1
 
         if processed_count % 5000 == 0:
@@ -238,14 +231,13 @@ def upload_csv_to_gcs(df, target_date=None):
         raise
 
 
-def main(gcs_xml_path, target_date=None, max_rows=None, **kwargs):
+def main(gcs_xml_path, target_date=None, **kwargs):
     """
-    Main function for Airflow task
-    
+    Main function for Airflow task.
+
     Args:
         gcs_xml_path: GCS path to XML file
         target_date: Target date for output naming
-        max_rows: Optional limit on number of rows (for testing)
     """
     import os
     
@@ -256,7 +248,7 @@ def main(gcs_xml_path, target_date=None, max_rows=None, **kwargs):
     local_xml_path = download_from_gcs(gcs_xml_path)
     
     try:
-        df = parse_xml_file(local_xml_path, max_rows=max_rows)
+        df = parse_xml_file(local_xml_path)
         
         if df.empty:
             logger.warning("No data extracted from XML")

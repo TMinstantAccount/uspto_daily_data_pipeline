@@ -13,10 +13,6 @@ This DAG runs daily to:
 
 Schedule: Daily at 4:00 AM CST (10:00 UTC)
 USPTO publishes each day's XML data feed around 12:00 AM EST.
-
-Manual override:
-    Set Airflow Variable  manual_target_date = "YYYY-MM-DD"  then trigger the DAG.
-    Clear the variable (set to "" or delete it) to resume normal scheduled runs.
 """
 from datetime import datetime, timedelta
 from airflow import DAG
@@ -72,40 +68,9 @@ dag = DAG(
 # Helpers
 # ---------------------------------------------------------------------------
 
-_DATE_FORMATS = ['%Y-%m-%d', '%m-%d-%Y', '%m/%d/%Y', '%Y/%m/%d']
-
-
-def _get_manual_date():
-    """Return a datetime if the Airflow Variable 'manual_target_date' is set, else None.
-
-    Accepts formats: YYYY-MM-DD, MM-DD-YYYY, MM/DD/YYYY, YYYY/MM/DD.
-    """
-    try:
-        raw = Variable.get('manual_target_date', default_var='')
-        if not raw or not raw.strip():
-            return None
-        value = raw.strip()
-        for fmt in _DATE_FORMATS:
-            try:
-                dt = datetime.strptime(value, fmt)
-                logger.info(f"Manual override active — target date: {dt.strftime('%Y-%m-%d')}")
-                return dt
-            except ValueError:
-                continue
-        logger.warning(
-            f"Invalid manual_target_date '{value}'. "
-            f"Use YYYY-MM-DD (e.g. 2026-03-05) or MM-DD-YYYY (e.g. 3-05-2026)."
-        )
-    except Exception:
-        pass
-    return None
-
 
 def _resolve_target_date(context):
-    """Return the manual date if set, otherwise the Airflow execution_date."""
-    manual = _get_manual_date()
-    if manual:
-        return manual
+    """Return the Airflow execution_date as the target date."""
     return context['execution_date']
 
 
@@ -116,23 +81,6 @@ def _get_xml_file_date(context):
     if xml_file_date_str:
         return datetime.strptime(xml_file_date_str, '%Y-%m-%d')
     return _resolve_target_date(context)
-
-
-def _get_max_rows():
-    """Return row limit from Airflow Variable 'max_rows', or None for no limit.
-
-    Set max_rows to a number (e.g. 10) for testing. Clear it or set to 0 for production.
-    """
-    try:
-        raw = Variable.get('max_rows', default_var='')
-        if raw and raw.strip():
-            value = int(raw.strip())
-            if value > 0:
-                logger.info(f"TEST MODE: max_rows={value}")
-                return value
-    except (ValueError, Exception):
-        pass
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -173,9 +121,8 @@ def parse_xml_task(**context):
         raise ValueError("No XML path received from download task")
 
     target_date = _get_xml_file_date(context)
-    max_rows = _get_max_rows()
 
-    result = parse_xml.main(gcs_xml_path=gcs_xml_path, target_date=target_date, max_rows=max_rows, **context)
+    result = parse_xml.main(gcs_xml_path=gcs_xml_path, target_date=target_date, **context)
 
     ti.xcom_push(key='gcs_parsed_csv', value=result['gcs_csv_path'])
     ti.xcom_push(key='record_count', value=result['record_count'])
@@ -192,12 +139,10 @@ def scrape_emails_task(**context):
         raise ValueError("No parsed CSV path received from parse task")
 
     target_date = _get_xml_file_date(context)
-    max_rows = _get_max_rows()
 
     result = scrape_emails.main(
         gcs_parsed_csv_path=gcs_parsed_csv,
         target_date=target_date,
-        max_rows=max_rows,
         **context
     )
 

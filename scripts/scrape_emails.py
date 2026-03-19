@@ -222,34 +222,23 @@ def upload_csv_to_gcs(local_path, target_date=None):
     return f"gs://{GCS_BUCKET}/{gcs_path}"
 
 
-def main(gcs_parsed_csv_path, target_date=None, max_rows=None, **kwargs):
-    """Main function for Airflow task
-    
+def main(gcs_parsed_csv_path, target_date=None, **kwargs):
+    """Main function for Airflow task.
+
     Args:
         gcs_parsed_csv_path: Path to parsed CSV in GCS
         target_date: Target date for processing
-        max_rows: Optional limit on number of rows to scrape (for testing)
     """
     import os
     
     logger.info("="*80)
     logger.info("Email Scraper - Starting")
     logger.info("="*80)
-    
-    if max_rows:
-        logger.info(f"TEST MODE: Limiting scraping to {max_rows} rows")
 
     local_csv_path = download_csv_from_gcs(gcs_parsed_csv_path)
 
     try:
         df = pd.read_csv(local_csv_path)
-        original_total = len(df)
-        
-        # Limit rows if max_rows is specified (for testing)
-        if max_rows:
-            df = df.head(max_rows)
-            logger.info(f"Limited from {original_total} rows to {max_rows} rows for testing")
-        
         total = len(df)
         logger.info(f"Processing {total} URLs")
 
