@@ -1,6 +1,7 @@
--- Create uspto_trademark_emails: one row per email per case.
+-- Create uspto_trademark_emails: one row per email per case per day.
 -- email_sent = single email for this row; email_r_to_sent = full list (email1,email2,email3).
--- Composite primary key: (serial_number, status_code, email_sent).
+-- Composite primary key: (serial_number, status_code, email_sent, refresh_date).
+-- Same case appearing on consecutive days produces separate rows (daily history).
 
 CREATE TABLE dbo.uspto_trademark_emails (
     serial_number          VARCHAR(50)   NOT NULL,
@@ -23,8 +24,8 @@ CREATE TABLE dbo.uspto_trademark_emails (
     owner_address          VARCHAR(1000) NULL,
     most_recent_status_date DATE         NULL,
 
-    created_at             DATETIME2     NOT NULL DEFAULT GETDATE(),
+    created_at             DATE          NOT NULL,  -- Central calendar date when row was inserted (YYYY-MM-DD)
 
-    PRIMARY KEY (serial_number, status_code, email_sent)
+    PRIMARY KEY (serial_number, status_code, email_sent, refresh_date)
 );
 GO

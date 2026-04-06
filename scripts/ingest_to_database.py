@@ -4,15 +4,10 @@ Self-Hosted Airflow with GCS Storage
 """
 import pandas as pd
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from google.cloud import storage
 import tempfile
-import sys
-import os
-from typing import Optional
-
-# Import azure_sql_connection from scripts directory
-# Add scripts directory to path to ensure azure_sql_connection can be found
 import sys
 import os
 scripts_dir = os.path.dirname(os.path.abspath(__file__))
@@ -29,6 +24,13 @@ from config.config import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+_CENTRAL_TZ = ZoneInfo("America/Chicago")
+
+
+def _central_today() -> date:
+    """Calendar date (YYYY-MM-DD) in America/Chicago for the current instant."""
+    return datetime.now(_CENTRAL_TZ).date()
 
 
 def download_csv_from_gcs(gcs_path):
@@ -140,19 +142,24 @@ def check_duplicate(db_conn, serial_number, status_code, email_sent, refresh_dat
         return False
 
 
-def insert_batch_to_database(db_conn, df, refresh_date):
+def insert_batch_to_database(db_conn, df, refresh_date, created_at_ct=None):
     """
     Insert DataFrame rows into database, skipping duplicates.
-    
+
     Args:
         db_conn: AzureSQLConnection instance
         df: DataFrame with normalized email data
-        refresh_date: Refresh date to filter duplicates
-        
+        refresh_date: XML file date (duplicate key / business date)
+        created_at_ct: DATE in Central time when ingest runs; defaults to now (Central calendar date)
+
     Returns:
         Dictionary with insertion statistics
     """
-    logger.info(f"Preparing to insert {len(df)} rows into database...")
+    if created_at_ct is None:
+        created_at_ct = _central_today()
+    logger.info(
+        f"Preparing to insert {len(df)} rows — created_at (Central date at ingest): {created_at_ct}"
+    )
     
     # Required columns for insertion
     required_cols = ['serial_number', 'status_code', 'email_sent', 'email_r_to_sent']
@@ -172,11 +179,12 @@ def insert_batch_to_database(db_conn, df, refresh_date):
         'filing_date', 'status_description', 'attorney_name', 'attorney_email',
         'correspondent_name', 'correspondent_email', 'prosecution_date',
         'prosecution_description', 'url', 'correspondent_address',
-        'owner_name', 'owner_address', 'most_recent_status_date'
+        'owner_name', 'owner_address', 'most_recent_status_date',
+        'created_at'
     ]
     
-    # Get available columns from DataFrame
-    available_cols = [col for col in db_columns if col in df.columns]
+    # Columns from CSV plus created_at (not present in CSV)
+    available_cols = [col for col in db_columns if col in df.columns or col == 'created_at']
     
     # Process in batches
     batch_size = 100
@@ -195,7 +203,7 @@ def insert_batch_to_database(db_conn, df, refresh_date):
                 email_sent = str(row['email_sent']) if pd.notna(row['email_sent']) else ''
                 email_r_to_sent = str(row['email_r_to_sent']) if pd.notna(row['email_r_to_sent']) else ''
                 
-                # Skip if we already have this row (case + email_sent) for this refresh_date
+                # Skip if we already have this exact row for this refresh_date
                 if check_duplicate(db_conn, serial_number, status_code, email_sent, refresh_date):
                     skipped_count += 1
                     continue
@@ -203,67 +211,39 @@ def insert_batch_to_database(db_conn, df, refresh_date):
                 # Prepare values
                 values = []
                 for col in available_cols:
-                    value = row.get(col)
-                    if pd.isna(value):
-                        values.append(None)
-                    elif col == 'refresh_date':
+                    if col == 'refresh_date':
                         values.append(refresh_date)
+                    elif col == 'created_at':
+                        values.append(created_at_ct)
                     elif col in ['filing_date', 'most_recent_status_date']:
-                        # Convert date strings to date objects
-                        if isinstance(value, str):
+                        value = row.get(col)
+                        if pd.isna(value):
+                            values.append(None)
+                        elif isinstance(value, str):
                             try:
                                 values.append(datetime.strptime(value, '%Y-%m-%d').date())
-                            except:
+                            except Exception:
                                 values.append(None)
                         else:
                             values.append(value)
                     else:
-                        values.append(str(value)[:1000] if len(str(value)) > 1000 else str(value))
+                        value = row.get(col)
+                        if pd.isna(value):
+                            values.append(None)
+                        else:
+                            values.append(str(value)[:1000] if len(str(value)) > 1000 else str(value))
                 
-                # Check if record exists (same serial_number + status_code + email_sent)
-                check_existing_query = """
-                SELECT COUNT(*) as cnt
-                FROM uspto_trademark_emails
-                WHERE serial_number = ? AND status_code = ? AND email_sent = ?
+                # Insert new row (PK includes refresh_date, so same case on a different day is a new row)
+                columns_str = ', '.join(available_cols)
+                placeholders = ', '.join(['?' for _ in available_cols])
+                
+                insert_query = f"""
+                INSERT INTO uspto_trademark_emails ({columns_str})
+                VALUES ({placeholders})
                 """
-                existing_results = db_conn.execute_query(
-                    check_existing_query,
-                    (str(serial_number), str(status_code), email_sent)
-                )
                 
-                if existing_results[0]['cnt'] > 0:
-                    # Record exists (same row), update it
-                    update_cols = [col for col in available_cols if col not in ['serial_number', 'status_code', 'email_sent']]
-                    set_clause = ', '.join([f"{col} = ?" for col in update_cols])
-                    
-                    update_query = f"""
-                    UPDATE uspto_trademark_emails
-                    SET {set_clause}
-                    WHERE serial_number = ? AND status_code = ? AND email_sent = ?
-                    """
-                    
-                    update_values = []
-                    for col in update_cols:
-                        idx = available_cols.index(col)
-                        update_values.append(values[idx])
-                    update_values.append(str(serial_number))
-                    update_values.append(str(status_code))
-                    update_values.append(email_sent)
-                    
-                    db_conn.execute_non_query(update_query, tuple(update_values))
-                    inserted_count += 1  # Count as inserted (actually updated)
-                else:
-                    # New record, insert it
-                    columns_str = ', '.join(available_cols)
-                    placeholders = ', '.join(['?' for _ in available_cols])
-                    
-                    insert_query = f"""
-                    INSERT INTO uspto_trademark_emails ({columns_str})
-                    VALUES ({placeholders})
-                    """
-                    
-                    db_conn.execute_non_query(insert_query, tuple(values))
-                    inserted_count += 1
+                db_conn.execute_non_query(insert_query, tuple(values))
+                inserted_count += 1
                 
             except Exception as e:
                 error_count += 1
@@ -388,14 +368,14 @@ def write_pipeline_summary(
         status          : str         – 'SUCCESS' | 'FAILED' | 'PARTIAL'
         dag_run_id      : str | None  – Airflow dag_run_id for traceability
         error_message   : str | None  – first 2 000 chars of any error detail
+
+    ended_at is the Central (America/Chicago) calendar date when this summary runs,
+    stored as DATE (YYYY-MM-DD), not the XML file date.
     """
-    from zoneinfo import ZoneInfo
-
-    _central = ZoneInfo("America/Chicago")
-    end_time_ct = datetime.now(_central).replace(tzinfo=None)  # naive Central Time for SQL Server
-
     if isinstance(data_fetch_date, str):
         data_fetch_date = datetime.strptime(data_fetch_date, '%Y-%m-%d').date()
+
+    ended_at = _central_today()
 
     error_message_trimmed = (error_message or '')[:2000] or None
 
@@ -406,12 +386,12 @@ def write_pipeline_summary(
     WHEN MATCHED THEN
         UPDATE SET
             rows_processed            = ?,
-            end_time_ct               = ?,
+            ended_at                  = ?,
             pipeline_execution_status = ?,
             dag_run_id                = ?,
             error_message             = ?
     WHEN NOT MATCHED THEN
-        INSERT (data_fetch_date, rows_processed, end_time_ct,
+        INSERT (data_fetch_date, rows_processed, ended_at,
                 pipeline_execution_status, dag_run_id, error_message)
         VALUES (?, ?, ?, ?, ?, ?);
     """
@@ -419,9 +399,9 @@ def write_pipeline_summary(
         # USING clause
         data_fetch_date,
         # UPDATE SET
-        rows_processed, end_time_ct, status, dag_run_id, error_message_trimmed,
+        rows_processed, ended_at, status, dag_run_id, error_message_trimmed,
         # INSERT VALUES
-        data_fetch_date, rows_processed, end_time_ct, status, dag_run_id, error_message_trimmed,
+        data_fetch_date, rows_processed, ended_at, status, dag_run_id, error_message_trimmed,
     )
 
     db_conn = None
@@ -430,9 +410,8 @@ def write_pipeline_summary(
         db_conn.connect()
         db_conn.execute_non_query(merge_query, params)
         logger.info(
-            f"Pipeline summary written — date={data_fetch_date} "
-            f"rows={rows_processed} status={status} "
-            f"end_time_ct={end_time_ct.strftime('%Y-%m-%d %H:%M:%S')} CT"
+            f"Pipeline summary written — data_fetch_date={data_fetch_date} "
+            f"rows={rows_processed} status={status} ended_at={ended_at} (Central calendar date)"
         )
     except Exception as e:
         logger.error(f"Failed to write pipeline summary: {e}")

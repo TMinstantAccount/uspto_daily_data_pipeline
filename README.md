@@ -15,7 +15,7 @@ Every day at **4:00 AM CST** (10:00 UTC), this pipeline automatically:
 5. 📊 Merges parsed and scraped data into a single CSV
 6. 📧 Normalizes emails (one row per case, comma-separated email lists)
 7. 🗄️ Ingests data into Azure SQL Database (`dbo.uspto_trademark_emails`)
-8. 📋 Writes a daily summary row to `dbo.uspto_pipeline_daily_summary` (Central Time)
+8. Writes a daily summary row to `dbo.uspto_pipeline_daily_summary`
 9. 📬 Sends email on failure (Airflow email alerts)
 
 ---
@@ -46,7 +46,7 @@ serial_number,filing_date,status_code,status_description,attorney_name,attorney_
 ### Output Locations
 
 - **GCS (CSV):** `gs://daily-file-staging/daily_final_result/YYYY/MM/DD/final_trademarks_YYYYMMDD.csv`
-- **Azure SQL:** `dbo.uspto_trademark_emails` (one row per email per case), `dbo.uspto_pipeline_daily_summary` (one row per run, timestamps in Central Time)
+- **Azure SQL:** `dbo.uspto_trademark_emails` (one row per email per case), `dbo.uspto_pipeline_daily_summary` (one row per run)
 
 Access GCS via:
 - [Google Cloud Console](https://console.cloud.google.com/storage/browser/daily-file-staging)
@@ -315,7 +315,7 @@ blob.download_to_filename('local_file.csv')
 | 4 | `merge_data` | Merge parsed + scraped CSVs, upload to GCS | 1–2 min |
 | 5 | `normalize_emails` | One row per case, comma-separated emails, upload to GCS | 1–2 min |
 | 6 | `ingest_to_database` | Ingest normalized CSV into Azure SQL `dbo.uspto_trademark_emails` | 2–5 min |
-| 7 | `write_pipeline_summary` | Write one row to `dbo.uspto_pipeline_daily_summary` (Central Time) | &lt; 1 min |
+| 7 | `write_pipeline_summary` | Write one row to `dbo.uspto_pipeline_daily_summary` | &lt; 1 min |
 
 **Total runtime:** ~45–90 minutes per day. Airflow sends email on task failure.
 
